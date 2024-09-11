@@ -1,48 +1,54 @@
 #pragma once
+
+#include <atomic>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
 
+struct TypeData
+{
+	std::vector<uint8_t*> memory;
+	std::atomic_bool is_locked = false;
+};
+
 template<class T>
 class TypeFunnel
 {
 public:
-	TypeFunnel(std::vector<uint8_t*> &data) :
+	TypeFunnel(TypeData &data) :
 		m_data(data)
 	{
-		m_mutex.lock();
+		m_data.is_locked = true;
 	}
 
 	~TypeFunnel()
 	{
-		m_mutex.unlock();
+		m_data.is_locked = false;
 	}
 
 	size_t size() const
 	{
-		return m_data.size();
+		return m_data.memory.size();
 	}
 
 	T* next()
 	{
-		if (m_offset > m_data.size())
+		if (m_offset > m_data.memory.size())
 		{
 			return nullptr;
 		}
 
-		auto *ptr = m_data[m_offset++];
+		auto *ptr = m_data.memory[m_offset++];
 
 		return (T*)ptr;
 	}
 
 private:
-	std::mutex m_mutex;
 	size_t m_offset = 0;
-	std::vector<uint8_t*> &m_data;
+	TypeData &m_data;
 };
 
 class TypeBox
@@ -80,6 +86,11 @@ public:
 			return std::nullopt;
 		}
 
+		if (iter->second.is_locked)
+		{
+			return std::nullopt;
+		}
+
 		return iter->second;
 	}
 
@@ -91,16 +102,19 @@ public:
 
 	void clear_all()
 	{
-		for (auto &[index, _] : m_type_container)
+		for (auto &[index, type_data] : m_type_container)
 		{
-			clear_implementation(index);
+			for (auto &data : type_data.memory)
+			{
+				delete data;
+			}
 		}
 
 		m_type_container.clear();
 	}
 private:
 	// NOTE: this is a horrible way to store data but for this example its fine
-	std::unordered_map<std::type_index, std::vector<uint8_t*>> m_type_container;
+	std::unordered_map<std::type_index, TypeData> m_type_container;
 
 	std::vector<uint8_t*>& get_or_emplace(std::type_index type)
 	{
@@ -111,7 +125,7 @@ private:
 			iter = m_type_container.emplace(type, std::vector<uint8_t*>()).first;
 		}
 
-		return iter->second;
+		return iter->second.memory;
 	}
 
 	void clear_implementation(std::type_index index)
@@ -123,7 +137,7 @@ private:
 			return;
 		}
 
-		for (auto &values : iter->second)
+		for (auto &values : iter->second.memory)
 		{
 			delete values;
 		}
